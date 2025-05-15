@@ -33,6 +33,7 @@ namespace Transpiler.Core.Models
         public bool IsPureVirtual { get; set; }
         public bool IsOverride { get; set; }
         public bool IsConst { get; set; }
+        public bool IsVirtual { get; set; }
 
         public MethodRepresentation(string name, string returnType, Visibility visibility, MethodType methodType = MethodType.Normal)
         {
@@ -43,6 +44,7 @@ namespace Transpiler.Core.Models
             IsPureVirtual = false;
             IsOverride = false;
             IsConst = false;
+            IsVirtual = false;
         }
 
         public void AddParameter(ParameterRepresentation parameter)

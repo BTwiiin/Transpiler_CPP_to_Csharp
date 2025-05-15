@@ -214,9 +214,15 @@ namespace Transpiler.Core.Parsing
                     continue; // Skip to next iteration after handling visibility
                 }
                 // Check for destructor
-                else if (Match(TokenType.Operator, "~"))
+                else if (Match(TokenType.Keyword, "virtual") || Match(TokenType.Operator, "~"))
                 {
-                    ParseDestructor(classRep);
+                    bool isVirtual = false;
+                    if (Match(TokenType.Keyword, "virtual"))
+                    {
+                        isVirtual = true;
+                        Consume();
+                    }
+                    ParseDestructor(classRep, isVirtual);
                 }
                 // Check for operator overload
                 else if (Match(TokenType.Keyword, "operator"))
@@ -227,14 +233,100 @@ namespace Transpiler.Core.Parsing
                 else if (Match(TokenType.Identifier) || Match(TokenType.Keyword))
                 {
                     Console.WriteLine("Found identifier or keyword, might be a method or field");
+                    
                     // Parse the type
                     string typeName = ParseType();
                     Console.WriteLine($"Parsed type: {typeName}");
                     
+                    // Special handling for virtual destructor
+                    if (typeName == "virtual" && Match(TokenType.Operator, "~"))
+                    {
+                        ParseDestructor(classRep, true);
+                        continue;
+                    }
+                    
+                    // Check for operator keyword
+                    if (Match(TokenType.Keyword, "operator"))
+                    {
+                        Consume(); // Consume 'operator'
+                        
+                        // Get operator type
+                        if (!Match(TokenType.Operator))
+                        {
+                            throw new Exception($"Expected operator at line {_currentToken.Line}, column {_currentToken.Column}");
+                        }
+                        
+                        string operatorSymbol = _currentToken.Lexeme;
+                        Consume();
+                        
+                        // Create operator method representation
+                        string name = "operator" + operatorSymbol;
+                        MethodRepresentation operatorMethod = new MethodRepresentation(name, typeName, _currentVisibility, MethodType.Operator);
+                        
+                        // Parse parameters
+                        ParseParameters(operatorMethod);
+                        
+                        // Check for const qualifier
+                        if (Match(TokenType.Keyword, "const"))
+                        {
+                            operatorMethod.IsConst = true;
+                            Consume();
+                        }
+                        
+                        // Expect semicolon
+                        Expect(TokenType.Symbol, ";");
+                        
+                        classRep.AddMethod(operatorMethod);
+                        continue;
+                    }
+                    
                     // Check if it's the class name (constructor)
                     if (Match(TokenType.Identifier, classRep.Name))
                     {
-                        ParseConstructor(classRep);
+                        string name = _currentToken.Lexeme;
+                        Consume();
+                        
+                        // Check if it's a constructor (followed by '(') or a return type
+                        if (Match(TokenType.Symbol, "("))
+                        {
+                            // It's a constructor
+                            MethodRepresentation constructor = new MethodRepresentation(name, "", _currentVisibility, MethodType.Constructor);
+                            ParseParameters(constructor);
+                            
+                            // Handle constructor body or semicolon
+                            if (Match(TokenType.Symbol, "{"))
+                            {
+                                // Skip constructor body
+                                int braceCount = 1;
+                                Consume(); // Skip opening brace
+                                
+                                while (braceCount > 0 && !Match(TokenType.EndOfFile))
+                                {
+                                    if (Match(TokenType.Symbol, "{"))
+                                    {
+                                        braceCount++;
+                                    }
+                                    else if (Match(TokenType.Symbol, "}"))
+                                    {
+                                        braceCount--;
+                                    }
+                                    
+                                    Consume();
+                                }
+                            }
+                            else
+                            {
+                                // Expect semicolon for constructor declarations
+                                Expect(TokenType.Symbol, ";");
+                            }
+                            
+                            classRep.AddMethod(constructor);
+                        }
+                        else
+                        {
+                            // It's a return type, continue with method parsing
+                            ParseMethod(classRep, name, _currentToken.Lexeme);
+                        }
                     }
                     // Could also be a constructor declaration without a return type
                     else if (typeName == classRep.Name && !Match(TokenType.Symbol, ";"))
@@ -545,10 +637,10 @@ namespace Transpiler.Core.Parsing
             classRep.AddMethod(constructor);
         }
 
-        private void ParseDestructor(ClassRepresentation classRep)
+        private void ParseDestructor(ClassRepresentation classRep, bool isVirtual = false)
         {
             // Consume '~'
-            Consume();
+            Expect(TokenType.Operator, "~");
             
             // Expect class name
             if (!Match(TokenType.Identifier, classRep.Name))
@@ -561,6 +653,7 @@ namespace Transpiler.Core.Parsing
             
             // Create destructor representation
             MethodRepresentation destructor = new MethodRepresentation(name, "void", _currentVisibility, MethodType.Destructor);
+            destructor.IsVirtual = isVirtual;
             
             // Parse parameters (should be empty)
             ParseParameters(destructor);
@@ -587,12 +680,19 @@ namespace Transpiler.Core.Parsing
             
             // Create operator method representation
             string name = "operator" + operatorSymbol;
-            string returnType = "bool"; // Assumed for operator==, could be different for others
+            string returnType = "bool"; // Default return type for comparison operators
             
             MethodRepresentation operatorMethod = new MethodRepresentation(name, returnType, _currentVisibility, MethodType.Operator);
             
             // Parse parameters
             ParseParameters(operatorMethod);
+            
+            // Check for const qualifier
+            if (Match(TokenType.Keyword, "const"))
+            {
+                operatorMethod.IsConst = true;
+                Consume();
+            }
             
             // Expect semicolon
             Expect(TokenType.Symbol, ";");
@@ -608,6 +708,13 @@ namespace Transpiler.Core.Parsing
             // Skip virtual keyword
             if (typeName == "virtual")
             {
+                // Check if next token is ~ (destructor)
+                if (Match(TokenType.Operator, "~"))
+                {
+                    // This is a virtual destructor, let ParseClassBody handle it
+                    return "virtual";
+                }
+                
                 if (!Match(TokenType.Identifier) && !Match(TokenType.Keyword))
                 {
                     throw new Exception($"Expected type after 'virtual' at line {_currentToken.Line}, column {_currentToken.Column}");
