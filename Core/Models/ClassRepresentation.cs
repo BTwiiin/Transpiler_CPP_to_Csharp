@@ -67,8 +67,10 @@ namespace Transpiler.Core.Models
                     
                     if (allMatch)
                     {
+                        Console.ForegroundColor = ConsoleColor.Red;
                         Console.WriteLine($"ERROR: Method '{method.Name}' redefined!");
-                        throw new Exception($"Method '{method.Name}' redefined");
+                        Console.ResetColor();
+                        throw new Exception($"Method '{method.Name}' redefined - duplicate method signature detected");
                     }
                 }
             }

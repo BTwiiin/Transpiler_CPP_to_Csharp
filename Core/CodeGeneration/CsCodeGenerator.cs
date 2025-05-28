@@ -3,7 +3,7 @@ using System;
 using System.IO;
 using System.Linq;
 using System.Text;
-using Transpiler.Core.Transformation;
+using Transpiler.Core.Models;
 
 namespace Transpiler.Core.CodeGeneration
 {
@@ -139,7 +139,6 @@ namespace Transpiler.Core.CodeGeneration
                     code.Append("abstract ");
                 }
                 
-                // Constructors don't have return type
                 if (!method.IsConstructor)
                 {
                     code.Append(method.ReturnType).Append(" ");
@@ -176,16 +175,13 @@ namespace Transpiler.Core.CodeGeneration
                 else if (method.IsEquals)
                 {
                     code.AppendLine("        // TODO: implement equality comparison");
-                    code.AppendLine("        return false; // Default implementation");
                 }
                 else
                 {
                     if (method.ReturnType != "void" && method.ReturnType != "")
                     {
                         code.AppendLine("        // TODO: implement method");
-                        code.Append("        return ");
                         
-                        // Generate a default return value
                         switch (method.ReturnType)
                         {
                             case "int":

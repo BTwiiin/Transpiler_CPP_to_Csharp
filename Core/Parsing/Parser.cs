@@ -1,10 +1,9 @@
 // Parser.cs - Parses tokens into class representations
-using System;
-using System.Collections.Generic;
-using System.IO;
 using Transpiler.Core.Lexing;
 using Transpiler.Core.Models;
-using System.Linq;
+using Transpiler.Core.CustomException;
+using System;
+using System.Formats.Asn1;
 
 namespace Transpiler.Core.Parsing
 {
@@ -15,63 +14,74 @@ namespace Transpiler.Core.Parsing
         private string _sourceFileName;
         private List<ClassRepresentation> _classes = new List<ClassRepresentation>();
         private Visibility _currentVisibility = Visibility.Private; // Default visibility in C++
-        private readonly HashSet<string> _keywords = new HashSet<string>
-        {
-            "class", "public", "private", "protected", 
-            "const", "static", "void", "int", "double", "bool", "string",
-            "operator", "override", "std::vector", "std::list", "std::map", "std::set"
-        };
+        private Token _markedToken;
 
         public Parser(Scanner scanner, string sourceFileName)
         {
             _scanner = scanner;
             _sourceFileName = sourceFileName;
-            _currentToken = GetNextMeaningfulToken();
-        }
-
-        private Token GetNextMeaningfulToken()
-        {
-            Token token;
-            do
-            {
-                token = _scanner.GetNextToken();
-            }
-            while (token.Type == TokenType.Whitespace || token.Type == TokenType.Comment);
-            
-            return token;
+            _currentToken = _scanner.GetNextToken();
         }
 
         private void Consume()
         {
-            _currentToken = GetNextMeaningfulToken();
+            // Console.WriteLine($"Consuming token: {_currentToken.Type} '{_currentToken.Lexeme}' at line {_currentToken.Line}, column {_currentToken.Column}");
+            _currentToken = _scanner.GetNextToken();
         }
+        
 
+        // Match the current token with the expected type and lexeme
         private bool Match(TokenType type, string? lexeme = null)
         {
-            return _currentToken.Type == type && 
+            return _currentToken.Type == type &&
                   (lexeme == null || _currentToken.Lexeme == lexeme);
         }
 
+        // Consume the current token if it matches the expected type and lexeme
         private void Expect(TokenType type, string? lexeme = null)
         {
             if (!Match(type, lexeme))
             {
                 string expected = lexeme == null ? type.ToString() : $"{type} '{lexeme}'";
                 string found = $"{_currentToken.Type} '{_currentToken.Lexeme}'";
-                
+
                 throw new Exception($"Parse error at line {_currentToken.Line}, column {_currentToken.Column}: Expected {expected}, found {found}");
             }
-            
+
             Consume();
+        }
+
+        private void MarkPosition()
+        {
+            _scanner.Mark();
+            // Store the current token state
+            _markedToken = _currentToken;
+        }
+
+        private void ResetPosition()
+        {
+            _scanner.Reset();
+            // Restore the token state
+            _currentToken = _markedToken;
+        }
+
+        private void CommitPosition()
+        {
+            _scanner.Commit();
+            // Clear the marked token
+            _markedToken = null;
         }
 
         public List<ClassRepresentation> Parse()
         {
+
+
             while (_currentToken.Type != TokenType.EndOfFile)
             {
-                if (Match(TokenType.Keyword, "class"))
+                ClassRepresentation? classRep;
+                if (TryParseClass(out classRep))
                 {
-                    ParseClass();
+                    _classes.Add(classRep);
                 }
                 else
                 {
@@ -79,704 +89,740 @@ namespace Transpiler.Core.Parsing
                     Consume();
                 }
             }
+            Console.WriteLine($"Parsed {_classes.Count} classes");
+            foreach (var classRep in _classes)
+            {
+                Console.WriteLine($"Class: {classRep.Name}");
+                foreach (var field in classRep.Fields)
+                {
+                    Console.WriteLine($"  Field: {field.Name} ({field.Type})");
+                }
+                foreach (var method in classRep.Methods)
+                {
+                    Console.WriteLine($"  Method: {method.Name} ({method.ReturnType})");
+                }
+            }
             
             return _classes;
         }
 
-        private void ParseClass()
+        // class_declaration ::= "class" identifier inheritance? "{" class_body "}" ";"
+        private bool TryParseClass(out ClassRepresentation? classRep)
         {
-            // Consume 'class' keyword
-            Expect(TokenType.Keyword, "class");
-            
-            // Parse class name
-            if (!Match(TokenType.Identifier))
+            if (Match(TokenType.KeywordClass, "class"))
             {
-                throw new Exception($"Expected class name at line {_currentToken.Line}, column {_currentToken.Column}");
-            }
-            
-            string className = _currentToken.Lexeme;
-            Consume();
-            
-            // Create class representation
-            ClassRepresentation classRep = new ClassRepresentation(className, Path.GetFileName(_sourceFileName));
-
-            // Check for redefinition
-            if (_classes.Exists(c => c.Name == className))
-            {
-                throw new Exception($"Class '{className}' redefined at line {_currentToken.Line}, column {_currentToken.Column}");
-            }
-            
-            // Check for inheritance
-            if (Match(TokenType.Symbol, ":"))
-            {
-                ParseInheritance(classRep);
-            }
-            
-            // Expect opening brace '{'
-            Expect(TokenType.Symbol, "{");
-            
-            // Reset visibility to default
-            _currentVisibility = Visibility.Private;
-            
-            // Parse class body
-            ParseClassBody(classRep);
-            
-            // Expect closing brace '}'
-            Expect(TokenType.Symbol, "}");
-            
-            // Optional semicolon after class definition
-            if (Match(TokenType.Symbol, ";"))
-            {
+                string className;
                 Consume();
-            }
-            
-            _classes.Add(classRep);
-        }
 
-        private void ParseInheritance(ClassRepresentation classRep)
-        {
-            // Consume ':' symbol
-            Expect(TokenType.Symbol, ":");
-            
-            // Parse base classes
-            do
-            {
-                string accessSpecifier = "public"; // Default access specifier
-                
-                // Check for access specifier
-                if (Match(TokenType.Keyword, "public") || 
-                    Match(TokenType.Keyword, "protected") || 
-                    Match(TokenType.Keyword, "private"))
+                // Check if the class name is already defined
+                if (_classes.Any(c => c.Name == _currentToken.Lexeme))
                 {
-                    accessSpecifier = _currentToken.Lexeme;
-                    Consume();
+                    throw new ParsingErrorException(_currentToken.Line, _currentToken.Column, $"Class '{_currentToken.Lexeme}' is already defined.");
                 }
-                
-                // Expect base class name
-                if (!Match(TokenType.Identifier))
+
+                if (TryParseIdentifier(out className))
                 {
-                    throw new Exception($"Expected base class name at line {_currentToken.Line}, column {_currentToken.Column}");
-                }
-                
-                string baseClassName = _currentToken.Lexeme;
-                Consume();
-                
-                classRep.AddBaseClass(baseClassName, accessSpecifier);
-                
-                // Check for comma (another base class)
-                if (Match(TokenType.Symbol, ","))
-                {
-                    Consume();
+                    classRep = new ClassRepresentation(className, _sourceFileName);
+
+                    /* 
+                    inheritance ::= ":" base_class ( "," base_class )* 
+
+                    base_class ::= "public" identifier |  
+                                      "protected" identifier  |
+                                      "private" identifier  |
+                                       identifier  // default public if omitted? 
+                    */
+
+                    if (Match(TokenType.Symbol, ":"))
+                    {
+                        Consume();
+                        string baseClassName;
+
+                        // Check for visibility specifier of base class and consume it
+                        if (Match(TokenType.KeywordPublic, "public"))
+                        {
+                            _currentVisibility = Visibility.Public;
+                            Consume();
+                        }
+                        else if (Match(TokenType.KeywordProtected, "protected"))
+                        {
+                            _currentVisibility = Visibility.Protected;
+                            Consume();
+                        }
+                        else if (Match(TokenType.KeywordPrivate, "private"))
+                        {
+                            _currentVisibility = Visibility.Private;
+                            Consume();
+                        }
+
+                        // Check for base class name
+                        // C++ supports multiple inheritance, so we can add multiple base classes
+                        if (TryParseIdentifier(out baseClassName))
+                        {
+                            classRep.AddBaseClass(baseClassName);
+                            while (Match(TokenType.Symbol, ","))
+                            {
+                                Consume();
+                                if (TryParseIdentifier(out baseClassName))
+                                {
+                                    classRep.AddBaseClass(baseClassName);
+                                }
+                                else
+                                {
+                                    throw new ParsingErrorException(_currentToken.Line, _currentToken.Column, "Expected class name after ','");
+                                }
+                            }
+                        }
+                        else
+                        {
+                            throw new ParsingErrorException(_currentToken.Line, _currentToken.Column, "Expected class name after ':'");
+                        }
+                    }
+
+                    // Expect '{' to open the class body
+                    Expect(TokenType.Symbol, "{");
+
+                    if (TryParseBody(classRep))
+                    {
+                        // Successfully parsed class body
+                    }
+                    else
+                    {
+                        throw new ParsingErrorException(_currentToken.Line, _currentToken.Column, $"Expected class body: error after '{_currentToken.Lexeme}'");
+                    }
+
+                    // Expect '}' to close the class body and ';' to end the class declaration
+                    Expect(TokenType.Symbol, "}");
+                    Expect(TokenType.Symbol, ";");
+
+                    return true;
                 }
                 else
                 {
-                    break;
+                    throw new ParsingErrorException(_currentToken.Line, _currentToken.Column, "Expected class name after 'class'");
                 }
             }
-            while (true);
+            else
+            {
+                classRep = null;
+                return false;
+            }
         }
 
-        private void ParseClassBody(ClassRepresentation classRep)
+
+        // identifier ::= letter (letter | digit | "_")*
+        private bool TryParseIdentifier(out string identifier)
         {
-            Console.WriteLine("\nStarting to parse class body...");
+            if (Match(TokenType.Identifier))
+            {
+                identifier = _currentToken.Lexeme;
+                Consume();
+                return true;
+            }
+            identifier = null;
+            return false;
+        }
+
+        
+        // class_body ::= (visibility_section | field_declaration | method_declaration)* 
+        private bool TryParseBody(ClassRepresentation classRep)
+        {
+            Console.WriteLine($"Starting to parse body of class '{classRep.Name}'");
+            // Loop until we reach the closing '}' of the class body
             while (!Match(TokenType.Symbol, "}"))
             {
-                Console.WriteLine($"Current token: {_currentToken.Type} '{_currentToken.Lexeme}' at line {_currentToken.Line}");
+                if (_currentToken.Type == TokenType.EndOfFile)
+                {
+                    throw new SyntaxErrorException(_currentToken.Line, _currentToken.Column, "Unexpected end of file in class body");
+                }
+                else if (TryParseVisibilitySection())
+                {
+                    // Successfully parsed visibility section
+                    Console.WriteLine($"Parsed visibility section: {_currentVisibility}");
+                }
+                else if (TryParseOperatorDeclaration(classRep))
+                {
+                    Console.WriteLine($"Parsed operator declaration for class '{classRep.Name}'");
+                }
+                else if (TryParseConstructor(classRep))
+                {
+                    Console.WriteLine($"Parsed constructor for class '{classRep.Name}'");
+                }
+                else if (TryParseDestructor(classRep))
+                {
+                    Console.WriteLine($"Parsed destructor for class '{classRep.Name}'");
+                }
+                else if (TryParseFieldDeclaration(classRep))
+                {
+                    // Successfully parsed field declaration
+                    var lastField = classRep.Fields.LastOrDefault();
+                    Console.WriteLine($"Parsed field: {lastField?.Type} {lastField?.Name} with {lastField?.Visibility} visibility");
+                }
+                else if (TryParseMethodDeclaration(classRep))
+                {
+                    // Successfully parsed method declaration
+                    var lastMethod = classRep.Methods.LastOrDefault();
+                    Console.WriteLine($"Parsed method: {lastMethod?.ReturnType} {lastMethod?.Name} with {lastMethod?.Visibility} visibility");
+                }
+                else
+                {
+                    // If none matched, consume the token and continue
+                    Console.WriteLine($"Failed to parse element in class body at token: {_currentToken.Type} '{_currentToken.Lexeme}' at line {_currentToken.Line}, column {_currentToken.Column}");
+                    Consume();
+                }
+            }
+            // Return true if we stopped because of '}', false otherwise
+            bool result = Match(TokenType.Symbol, "}");
+            Console.WriteLine($"Finished parsing body of class '{classRep.Name}'. Success: {result}");
+            return result;
+        }
+
+
+        //constructor_declaration ::= identifier "(" parameter_list? ")" ";" 
+        private bool TryParseConstructor(ClassRepresentation classRep)
+        {
+            Console.WriteLine($"Trying to parse constructor for class '{classRep.Name}'. Current token: {_currentToken.Lexeme}");
+            if (Match(TokenType.Identifier, classRep.Name))
+            {
+                string constructorName = _currentToken.Lexeme;
+                Consume();
+                Console.WriteLine($"Check for \"(\"");
+                Expect(TokenType.Symbol, "(");
+
+                List<ParameterRepresentation> parameters = new List<ParameterRepresentation>();
+                if (TryParseParameterList(parameters))
+                {
+                    // Successfully parsed parameter list
+                }
+
+                Expect(TokenType.Symbol, ")");
+                Expect(TokenType.Symbol, ";");
                 
-                // Handle visibility sections
-                if (Match(TokenType.Keyword, "public") || 
-                    Match(TokenType.Keyword, "private") || 
-                    Match(TokenType.Keyword, "protected"))
+                var constructor = new MethodRepresentation(constructorName, classRep.Name, _currentVisibility, MethodType.Constructor);
+                foreach (var param in parameters)
                 {
-                    string visibility = _currentToken.Lexeme;
-                    Console.WriteLine($"Found visibility section: {visibility}");
+                    constructor.AddParameter(param);
+                }
+                classRep.AddMethod(constructor);
+                return true;
+            }
+            return false;
+        }
+
+        // destructor_declaration ::= "~" identifier "(" ")" ";"
+        private bool TryParseDestructor(ClassRepresentation classRep)
+        {
+            Console.WriteLine($"Trying to parse destructor for class '{classRep.Name}'. Current token: {_currentToken.Lexeme}");
+            if (Match(TokenType.Symbol, "~"))
+            {
+                Consume();
+                if (Match(TokenType.Identifier, classRep.Name))
+                {
+                    string destructorName = "~" + _currentToken.Lexeme;
                     Consume();
+                    Expect(TokenType.Symbol, "(");
+                    Expect(TokenType.Symbol, ")");
+                    Expect(TokenType.Symbol, ";");
                     
-                    // Expect colon
-                    if (!Match(TokenType.Symbol, ":"))
-                    {
-                        throw new Exception($"Expected ':' after visibility specifier at line {_currentToken.Line}, column {_currentToken.Column}");
-                    }
+                    classRep.AddMethod(new MethodRepresentation(destructorName, "void", _currentVisibility, MethodType.Destructor));
+                    return true;
+                }
+                else
+                {
+                    throw new ParsingErrorException(_currentToken.Line, _currentToken.Column, $"Expected class name '{classRep.Name}' after '~'");
+                }
+            }
+            return false;
+        }
+
+        // parameter_list ::= parameter ( "," parameter )*
+        private bool TryParseParameterList(List<ParameterRepresentation> parameters)
+        {
+            Console.WriteLine($"Trying to parse parameter list. Current token: {_currentToken.Lexeme}");
+            
+            // If we immediately see a closing parenthesis, there are no parameters
+            if (Match(TokenType.Symbol, ")"))
+            {
+                return true;
+            }
+
+            // Parse first parameter
+            ParameterRepresentation parameter;
+            if (!TryParseParameter(out parameter))
+            {
+                return false;
+            }
+            parameters.Add(parameter);
+
+            // Parse additional parameters separated by commas
+            while (Match(TokenType.Symbol, ","))
+            {
+                Consume(); // consume the comma
+                if (TryParseParameter(out parameter))
+                {
+                    parameters.Add(parameter);
+                }
+                else
+                {
+                    throw new ParsingErrorException(_currentToken.Line, _currentToken.Column, "Expected parameter after ','");
+                }
+            }
+
+            return true;
+        }
+
+        // parameter ::= "const"? type "&"? identifier?
+        private bool TryParseParameter(out ParameterRepresentation parameter)
+        {
+            Console.WriteLine($"Trying to parse parameter. Current token: {_currentToken.Lexeme}");
+            parameter = null;
+            
+            bool isConst = false;
+            bool isReference = false;
+            string paramType;
+            string paramName = "";
+
+            // Check for const qualifier
+            if (Match(TokenType.KeywordConst, "const"))
+            {
+                isConst = true;
+                Consume();
+            }
+
+            // Parse the type
+            if (!TryParseType(out paramType))
+            {
+                return false;
+            }
+
+            // Add const prefix if it was present
+            if (isConst)
+            {
+                paramType = "const " + paramType;
+            }
+
+            // Check for reference indicator
+            if (Match(TokenType.Symbol, "&"))
+            {
+                isReference = true;
+                paramType += "&";
+                Consume();
+            }
+
+            // Parse parameter name (optional in some contexts like function declarations)
+            if (Match(TokenType.Identifier))
+            {
+                paramName = _currentToken.Lexeme;
+                Consume();
+            }
+            else
+            {
+                // If no name is provided, generate a default parameter name
+                paramName = $"param{DateTime.Now.Ticks % 1000}";
+            }
+
+            parameter = new ParameterRepresentation(paramName, paramType);
+            Console.WriteLine($"Parsed parameter: {paramType} {paramName}");
+            return true;
+        }
+
+        // virtual_spec ::= "virtual"
+        private bool TryParseVirtualSpec(out bool isVirtual)
+        {
+            isVirtual = false;
+            if (Match(TokenType.KeywordVirtual, "virtual"))
+            {
+                isVirtual = true;
+                Consume();
+                return true;
+            }
+            return false;
+        }
+
+        // const_spec ::= "const"
+        private bool TryParseConstSpec(out bool isConst)
+        {
+            isConst = false;
+            if (Match(TokenType.KeywordConst, "const"))
+            {
+                isConst = true;
+                Consume();
+                return true;
+            }
+            return false;
+        }
+
+        // override_spec ::= "override"
+        private bool TryParseOverrideSpec(out bool isOverride)
+        {
+            isOverride = false;
+            if (Match(TokenType.KeywordOverride, "override"))
+            {
+                isOverride = true;
+                Consume();
+                return true;
+            }
+            return false;
+        }
+
+        // pure_virtual ::= "= 0"
+        private bool TryParsePureVirtual(out bool isPureVirtual)
+        {
+            isPureVirtual = false;
+            if (Match(TokenType.Symbol, "="))
+            {
+                Consume();
+                if (Match(TokenType.NumberLiteral, "0"))
+                {
+                    isPureVirtual = true;
                     Consume();
-                    
-                    switch (visibility)
-                    {
-                        case "public":
-                            _currentVisibility = Visibility.Public;
-                            break;
-                        case "private":
-                            _currentVisibility = Visibility.Private;
-                            break;
-                        case "protected":
-                            _currentVisibility = Visibility.Protected;
-                            break;
-                    }
-                    continue; // Skip to next iteration after handling visibility
+                    return true;
                 }
-                // Check for destructor
-                else if (Match(TokenType.Keyword, "virtual") || Match(TokenType.Operator, "~"))
+                else
                 {
-                    bool isVirtual = false;
-                    if (Match(TokenType.Keyword, "virtual"))
-                    {
-                        isVirtual = true;
-                        Consume();
-                    }
-                    ParseDestructor(classRep, isVirtual);
+                    throw new ParsingErrorException(_currentToken.Line, _currentToken.Column, "Expected '0' after '=' in pure virtual declaration");
                 }
-                // Check for operator overload
-                else if (Match(TokenType.Keyword, "operator"))
+            }
+            return false;
+        }
+
+        // operator_declaration ::= type "operator" operator_symbol "(" parameter_list? ")" const_spec? ";"
+        private bool TryParseOperatorDeclaration(ClassRepresentation classRep)
+        {
+            MarkPosition();
+            Console.WriteLine($"Trying to parse operator declaration. Current token: {_currentToken.Lexeme}");
+            
+            string returnType;
+            
+            // Parse the return type first
+            if (!TryParseType(out returnType))
+            {
+                ResetPosition();
+                return false;
+            }
+            
+            // Check for operator keyword (we'll need to look for the pattern as identifier)
+            if (Match(TokenType.Identifier, "operator"))
+            {
+                Consume();
+                
+                // Parse the operator symbol (==, +, -, etc.)
+                if (!Match(TokenType.Symbol) && !Match(TokenType.Operator))
                 {
-                    ParseOperator(classRep);
+                    throw new ParsingErrorException(_currentToken.Line, _currentToken.Column, "Expected operator symbol after 'operator'");
                 }
-                // Regular field or method
-                else if (Match(TokenType.Identifier) || Match(TokenType.Keyword))
+
+                string operatorSymbol = _currentToken.Lexeme;
+                string operatorName = "operator" + operatorSymbol;
+                Consume();
+
+                Expect(TokenType.Symbol, "(");
+
+                List<ParameterRepresentation> parameters = new List<ParameterRepresentation>();
+                if (TryParseParameterList(parameters))
                 {
-                    Console.WriteLine("Found identifier or keyword, might be a method or field");
+                    // Successfully parsed parameter list
+                }
+
+                Expect(TokenType.Symbol, ")");
+
+                // Check for const specifier
+                bool isConst;
+                TryParseConstSpec(out isConst);
+
+                Expect(TokenType.Symbol, ";");
+
+                var operatorMethod = new MethodRepresentation(operatorName, returnType, _currentVisibility, MethodType.Operator);
+                operatorMethod.IsConst = isConst;
+                foreach (var param in parameters)
+                {
+                    operatorMethod.AddParameter(param);
+                }
+                classRep.AddMethod(operatorMethod);
+                CommitPosition();
+                return true;
+            }
+            else
+            {
+                ResetPosition();
+                return false;
+            }
+        }
+
+        // visibility_section ::= ("public" | "protected" | "private") ":" TODO: Add ":" to documentation
+        private bool TryParseVisibilitySection()
+        {
+            if (Match(TokenType.KeywordPublic, "public"))
+            {
+                _currentVisibility = Visibility.Public;
+                Console.WriteLine($"Consuming {_currentToken.Lexeme}");
+                Consume();
+                Console.WriteLine($"Consuming using Expect {_currentToken.Lexeme}");
+                Expect(TokenType.Symbol, ":");
+                Console.WriteLine($"Token After Expect {_currentToken.Lexeme}");
+                return true;
+            }
+            else if (Match(TokenType.KeywordProtected, "protected"))
+            {
+                _currentVisibility = Visibility.Protected;
+                Consume();
+                Expect(TokenType.Symbol, ":");
+                return true;
+            }
+            else if (Match(TokenType.KeywordPrivate, "private"))
+            {
+                _currentVisibility = Visibility.Private;
+                Consume();
+                Expect(TokenType.Symbol, ":");
+                return true;
+            }
+            return false;
+        }
+
+
+        // field_declaration ::= type identifier ";"  TODO: Consider adding support for multiple fields in one declaration
+        private bool TryParseFieldDeclaration(ClassRepresentation classRep)
+        {
+            MarkPosition();
+            Console.WriteLine($"Current token marked position: '{_currentToken.Lexeme}'");
+            string fieldType;
+            string fieldName;
+
+            Console.WriteLine($"Trying to Mark field declaration for token '{_currentToken.Lexeme}'");
+
+            if (_currentToken.Lexeme == classRep.Name)
+            {
+                // Consume the class name token
+                Consume();
+                // Check for constructor
+                if (Match(TokenType.Symbol, "("))
+                {
+                    Console.WriteLine($"Constructor detected for class '{classRep.Name}' in Field Declaration");
+                    ResetPosition();
+                    return false;
+                }
+            }
+
+            if (!TryParseType(out fieldType))
+            {
+                ResetPosition();
+                return false;
+            }
+
+            if (!TryParseIdentifier(out fieldName))
+            {
+                ResetPosition();
+                return false;
+            }
+
+            // Check for duplicate field names
+            if (classRep.Fields.Any(f => f?.Name == fieldName))
+            {
+                throw new ParsingErrorException(_currentToken.Line, _currentToken.Column, $"Field '{fieldName}' is already defined in class '{classRep.Name}'.");
+            }
+
+            if (Match(TokenType.Symbol, "("))
+            {
+                ResetPosition();
+                Console.WriteLine($"Resetting position for field declaration '{_currentToken.Lexeme}'");
+                return false;
+            }
+
+            // Consume the ';' token
+            Expect(TokenType.Symbol, ";");
+
+            // Add the field to the class representation
+            classRep.AddField(new FieldRepresentation(fieldName, fieldType, _currentVisibility));
+            CommitPosition();
+            return true;
+        }
+
+        private bool TryParseMethodDeclaration(ClassRepresentation classRep)
+        {
+            MarkPosition();
+            Console.WriteLine($"Trying to parse method declaration for class '{classRep.Name}'. Current token: {_currentToken.Lexeme}");
+            
+            bool isVirtual = false;
+            bool isConst = false;
+            bool isOverride = false;
+            bool isPureVirtual = false;
+            string returnType;
+            string methodName;
+            List<ParameterRepresentation> parameters = new List<ParameterRepresentation>();
+
+            // Parse optional virtual specifier
+            TryParseVirtualSpec(out isVirtual);
+
+            // Parse return type (which may include const)
+            if (!TryParseType(out returnType))
+            {
+                ResetPosition();
+                return false;
+            }
+
+            // Parse method name
+            if (!TryParseIdentifier(out methodName))
+            {
+                ResetPosition();
+                return false;
+            }
+
+            // Check for opening parenthesis
+            if (!Match(TokenType.Symbol, "("))
+            {
+                ResetPosition();
+                return false;
+            }
+            Consume();
+
+            // Parse parameters
+            if (!TryParseParameterList(parameters))
+            {
+                ResetPosition();
+                return false;
+            }
+            Consume(); // Consume the closing parenthesis
+
+            // Parse optional const specifier
+            TryParseConstSpec(out isConst);
+
+            // Parse optional inheritance specifiers (override or pure virtual)
+            TryParseOverrideSpec(out isOverride);
+            if (!isOverride)
+            {
+                TryParsePureVirtual(out isPureVirtual);
+            }
+
+            // Expect semicolon
+            Expect(TokenType.Symbol, ";");
+
+            // Create and configure the method representation
+            var method = new MethodRepresentation(methodName, returnType, _currentVisibility, MethodType.Normal);
+            method.IsVirtual = isVirtual;
+            method.IsConst = isConst;
+            method.IsOverride = isOverride;
+            method.IsPureVirtual = isPureVirtual;
+            
+            foreach (var param in parameters)
+            {
+                method.AddParameter(param);
+            }
+
+            // Add the method to the class representation
+            classRep.AddMethod(method);
+            CommitPosition();
+            return true;
+        }
+
+
+        // type ::= "const"? ("int" | "double" | "std::string" | "bool" | identifier | collection_type) ("*"|"&")?
+        private bool TryParseType(out string type)
+        {
+            type = "";
+            bool isConst = false;
+            
+            // Check for const qualifier at the beginning
+            if (Match(TokenType.KeywordConst, "const"))
+            {
+                isConst = true;
+                type = "const ";
+                Consume();
+            }
+            
+            string baseType;
+            if (Match(TokenType.KeywordInt, "int") ||
+                Match(TokenType.KeywordDouble, "double") ||
+                Match(TokenType.KeywordBool, "bool") ||
+                Match(TokenType.KeywordVoid, "void"))
+            {
+                baseType = _currentToken.Lexeme;
+                Consume();
+            }
+            else if (Match(TokenType.KeywordStd, "std"))
+            {
+                Consume();
+                Expect(TokenType.Symbol, ":");
+                Expect(TokenType.Symbol, ":");
+                if (Match(TokenType.KeywordString, "string"))
+                {
+                    baseType = "std::string";
+                    Consume();
+                }
+                else if (Match(TokenType.KeywordStdVector, "vector") ||
+                    Match(TokenType.KeywordStdList, "list") ||
+                    Match(TokenType.KeywordStdSet, "set"))
+                {
+                    string collectionType = _currentToken.Lexeme;
+                    Consume();
+                    Expect(TokenType.Symbol, "<");
                     
-                    // Parse the type
-                    string typeName = ParseType();
-                    Console.WriteLine($"Parsed type: {typeName}");
-                    
-                    // Special handling for virtual destructor
-                    if (typeName == "virtual" && Match(TokenType.Operator, "~"))
+                    if (TryParseType(out string innerType))
                     {
-                        ParseDestructor(classRep, true);
-                        continue;
+                        baseType = $"std::{collectionType}<{innerType}>";
+                    }
+                    else
+                    {
+                        throw new ParsingErrorException(_currentToken.Line, _currentToken.Column, $"Expected type after '<' in collection type");
                     }
                     
-                    // Check for operator keyword
-                    if (Match(TokenType.Keyword, "operator"))
-                    {
-                        Consume(); // Consume 'operator'
-                        
-                        // Get operator type
-                        if (!Match(TokenType.Operator))
-                        {
-                            throw new Exception($"Expected operator at line {_currentToken.Line}, column {_currentToken.Column}");
-                        }
-                        
-                        string operatorSymbol = _currentToken.Lexeme;
-                        Consume();
-                        
-                        // Create operator method representation
-                        string name = "operator" + operatorSymbol;
-                        MethodRepresentation operatorMethod = new MethodRepresentation(name, typeName, _currentVisibility, MethodType.Operator);
-                        
-                        // Parse parameters
-                        ParseParameters(operatorMethod);
-                        
-                        // Check for const qualifier
-                        if (Match(TokenType.Keyword, "const"))
-                        {
-                            operatorMethod.IsConst = true;
-                            Consume();
-                        }
-                        
-                        // Expect semicolon
-                        Expect(TokenType.Symbol, ";");
-                        
-                        classRep.AddMethod(operatorMethod);
-                        continue;
-                    }
+                    Expect(TokenType.Symbol, ">");
+                }
+                else if (Match(TokenType.KeywordStdMap, "map"))
+                {
+                    Consume();
+                    Expect(TokenType.Symbol, "<");
                     
-                    // Check if it's the class name (constructor)
-                    if (Match(TokenType.Identifier, classRep.Name))
+                    if (TryParseType(out string keyType))
                     {
-                        string name = _currentToken.Lexeme;
-                        Consume();
-                        
-                        // Check if it's a constructor (followed by '(') or a return type
-                        if (Match(TokenType.Symbol, "("))
+                        Expect(TokenType.Symbol, ",");
+                        if (TryParseType(out string valueType))
                         {
-                            // It's a constructor
-                            MethodRepresentation constructor = new MethodRepresentation(name, "", _currentVisibility, MethodType.Constructor);
-                            ParseParameters(constructor);
-                            
-                            // Handle constructor body or semicolon
-                            if (Match(TokenType.Symbol, "{"))
-                            {
-                                // Skip constructor body
-                                int braceCount = 1;
-                                Consume(); // Skip opening brace
-                                
-                                while (braceCount > 0 && !Match(TokenType.EndOfFile))
-                                {
-                                    if (Match(TokenType.Symbol, "{"))
-                                    {
-                                        braceCount++;
-                                    }
-                                    else if (Match(TokenType.Symbol, "}"))
-                                    {
-                                        braceCount--;
-                                    }
-                                    
-                                    Consume();
-                                }
-                            }
-                            else
-                            {
-                                // Expect semicolon for constructor declarations
-                                Expect(TokenType.Symbol, ";");
-                            }
-                            
-                            classRep.AddMethod(constructor);
+                            baseType = $"std::map<{keyType}, {valueType}>";
                         }
                         else
                         {
-                            // It's a return type, continue with method parsing
-                            ParseMethod(classRep, name, _currentToken.Lexeme);
-                        }
-                    }
-                    // Could also be a constructor declaration without a return type
-                    else if (typeName == classRep.Name && !Match(TokenType.Symbol, ";"))
-                    {
-                        // This is a constructor declared without return type
-                        // Only handle it if the next token is not a semicolon, to avoid
-                        // processing forward declarations twice
-                        string name = typeName;
-                        MethodRepresentation constructor = new MethodRepresentation(name, "", _currentVisibility, MethodType.Constructor);
-                        
-                        // Parse parameters
-                        ParseParameters(constructor);
-                        
-                        // Handle constructor body or semicolon
-                        if (Match(TokenType.Symbol, "{"))
-                        {
-                            // Skip constructor body
-                            int braceCount = 1;
-                            Consume(); // Skip opening brace
-                            
-                            while (braceCount > 0 && !Match(TokenType.EndOfFile))
-                            {
-                                if (Match(TokenType.Symbol, "{"))
-                                {
-                                    braceCount++;
-                                }
-                                else if (Match(TokenType.Symbol, "}"))
-                                {
-                                    braceCount--;
-                                }
-                                
-                                Consume();
-                            }
-                        }
-                        else
-                        {
-                            // Expect semicolon for constructor declarations
-                            Expect(TokenType.Symbol, ";");
-                        }
-                        
-                        classRep.AddMethod(constructor);
-                    }
-                    else if (Match(TokenType.Identifier))
-                    {
-                        // It's a field or method
-                        string name = _currentToken.Lexeme;
-                        Console.WriteLine($"Found identifier: {name}");
-                        Consume();
-                        
-                        if (Match(TokenType.Symbol, "("))
-                        {
-                            Console.WriteLine($"Found opening parenthesis, this is a method: {name}");
-                            // It's a method
-                            ParseMethod(classRep, typeName, name);
-                        }
-                        else
-                        {
-                            Console.WriteLine($"No opening parenthesis, this is a field: {name}");
-                            // It's a field
-                            ParseField(classRep, typeName, name);
-                        }
-                    }
-                    else if (Match(TokenType.Symbol, "*") || Match(TokenType.Symbol, "&"))
-                    {
-                        // Pointer or reference type - append to type name
-                        typeName += _currentToken.Lexeme;
-                        Consume();
-                        
-                        if (Match(TokenType.Identifier))
-                        {
-                            string name = _currentToken.Lexeme;
-                            Consume();
-                            
-                            if (Match(TokenType.Symbol, "("))
-                            {
-                                // It's a method
-                                ParseMethod(classRep, typeName, name);
-                            }
-                            else
-                            {
-                                // It's a field
-                                ParseField(classRep, typeName, name);
-                            }
-                        }
-                        else
-                        {
-                            throw new Exception($"Expected identifier after pointer/reference at line {_currentToken.Line}, column {_currentToken.Column}");
+                            throw new ParsingErrorException(_currentToken.Line, _currentToken.Column, $"Expected value type after ',' in map type");
                         }
                     }
                     else
                     {
-                        Console.WriteLine($"Unexpected token after type: {_currentToken.Type} '{_currentToken.Lexeme}'");
-                        // Skip unexpected tokens
-                        Consume();
+                        throw new ParsingErrorException(_currentToken.Line, _currentToken.Column, $"Expected key type after '<' in map type");
                     }
+                    
+                    Expect(TokenType.Symbol, ">");
                 }
                 else
                 {
-                    Console.WriteLine($"Unexpected token: {_currentToken.Type} '{_currentToken.Lexeme}'");
-                    // Skip unexpected tokens
-                    Consume();
+                    throw new ParsingErrorException(_currentToken.Line, _currentToken.Column, $"Expected collection type after 'std::'");
                 }
             }
-            Console.WriteLine("Finished parsing class body");
-        }
-
-        private void ParseField(ClassRepresentation classRep, string typeName, string name)
-        {
-            // Field already has name and type, now just look for semicolon
-            Expect(TokenType.Symbol, ";");
-            
-            // Create field representation
-            FieldRepresentation field = new FieldRepresentation(name, typeName, _currentVisibility);
-            classRep.AddField(field);
-        }
-
-        private void ParseMethod(ClassRepresentation classRep, string returnType, string name)
-        {
-            Console.WriteLine($"\nParsing method: {name} (return type: {returnType})");
-            
-            // Create method representation
-            MethodRepresentation method = new MethodRepresentation(name, returnType, _currentVisibility);
-            
-            // Parse parameters
-            ParseParameters(method);
-            Console.WriteLine($"Parsed parameters: {method.Parameters.Count}");
-            
-            // Check if method with the same name and parameters already exists
-            Console.WriteLine("Checking for existing methods...");
-            foreach (var existingMethod in classRep.Methods)
+            else if (Match(TokenType.Identifier))
             {
-                Console.WriteLine($"Comparing with: {existingMethod.Name} (Const: {existingMethod.IsConst}, Parameters: {existingMethod.Parameters.Count})");
-            }
-            
-            if (classRep.Methods.Any(m => 
-                m.Name == name && 
-                m.Parameters.Count == method.Parameters.Count &&
-                ParametersMatch(m.Parameters, method.Parameters)))
-            {
-                Console.WriteLine($"ERROR: Method '{name}' redefined at line {_currentToken.Line}, column {_currentToken.Column}");
-                throw new Exception($"Method '{name}' redefined at line {_currentToken.Line}, column {_currentToken.Column}");
-            }
-            else if (classRep.Fields.Exists(f => f.Name == name))
-            {
-                Console.WriteLine($"ERROR: Field '{name}' redefined at line {_currentToken.Line}, column {_currentToken.Column}");
-                throw new Exception($"Field '{name}' redefined at line {_currentToken.Line}, column {_currentToken.Column}");
-            }
-
-            // Check for const method
-            if (Match(TokenType.Keyword, "const"))
-            {
-                method.IsConst = true;
-                Console.WriteLine("Found const qualifier");
-                Consume(); // Consume 'const'
-            }
-            
-            // Check for override keyword
-            if (Match(TokenType.Keyword, "override"))
-            {
-                method.IsOverride = true;
-                Consume(); // Consume 'override'
-            }
-            
-            // Check for pure virtual method (= 0)
-            if (Match(TokenType.Operator, "="))
-            {
-                Consume(); // Consume =
-                
-                if (Match(TokenType.NumberLiteral, "0"))
-                {
-                    method.IsPureVirtual = true;
-                    Console.WriteLine("Found pure virtual method");
-                    Consume(); // Consume 0
-                }
-            }
-            
-            // Handle method body or semicolon
-            if (Match(TokenType.Symbol, "{"))
-            {
-                // Skip method body
-                int braceCount = 1;
-                Consume(); // Skip opening brace
-                
-                while (braceCount > 0 && !Match(TokenType.EndOfFile))
-                {
-                    if (Match(TokenType.Symbol, "{"))
-                    {
-                        braceCount++;
-                    }
-                    else if (Match(TokenType.Symbol, "}"))
-                    {
-                        braceCount--;
-                    }
-                    
-                    Consume();
-                }
+                baseType = _currentToken.Lexeme;
+                Consume();
             }
             else
             {
-                // Expect semicolon for method declarations
-                Expect(TokenType.Symbol, ";");
+                return false;
             }
             
-            Console.WriteLine($"Adding method to class: {name} (Const: {method.IsConst}, PureVirtual: {method.IsPureVirtual})");
-            classRep.AddMethod(method);
-        }
-
-        private void ParseParameters(MethodRepresentation method)
-        {
-            // Consume '('
-            Expect(TokenType.Symbol, "(");
+            type += baseType;
             
-            // Check for empty parameter list
-            if (Match(TokenType.Symbol, ")"))
+            // Check for pointer or reference indicators
+            if (Match(TokenType.Symbol, "*"))
             {
+                type += "*";
                 Consume();
-                return;
             }
-            
-            // Parse parameters
-            do
+            else if (Match(TokenType.Symbol, "&"))
             {
-                // Handle 'const' modifier
-                if (Match(TokenType.Keyword, "const"))
-                {
-                    Consume();
-                }
-                
-                // Get parameter type
-                if (!Match(TokenType.Identifier) && !Match(TokenType.Keyword))
-                {
-                    throw new Exception($"Expected parameter type at line {_currentToken.Line}, column {_currentToken.Column}");
-                }
-                
-                string paramType = ParseType();
-                
-                // Handle reference/pointer types
-                if (Match(TokenType.Operator, "&") || Match(TokenType.Operator, "*"))
-                {
-                    paramType += _currentToken.Lexeme;
-                    Consume();
-                }
-                
-                // Get parameter name (might be omitted)
-                string paramName = "";
-                if (Match(TokenType.Identifier))
-                {
-                    paramName = _currentToken.Lexeme;
-                    Consume();
-                }
-                
-                method.AddParameter(paramName, paramType);
-                
-                // Check for comma (another parameter)
-                if (Match(TokenType.Symbol, ","))
-                {
-                    Consume();
-                }
-                else
-                {
-                    break;
-                }
-            }
-            while (true);
-            
-            // Expect closing parenthesis
-            Expect(TokenType.Symbol, ")");
-        }
-
-        private void ParseConstructor(ClassRepresentation classRep)
-        {
-            string name = _currentToken.Lexeme;
-            Consume();
-            
-            // Create constructor representation
-            MethodRepresentation constructor = new MethodRepresentation(name, "", _currentVisibility, MethodType.Constructor);
-            
-            // Parse parameters
-            ParseParameters(constructor);
-            
-            // Handle constructor body or semicolon
-            if (Match(TokenType.Symbol, "{"))
-            {
-                // Skip constructor body
-                int braceCount = 1;
-                Consume(); // Skip opening brace
-                
-                while (braceCount > 0 && !Match(TokenType.EndOfFile))
-                {
-                    if (Match(TokenType.Symbol, "{"))
-                    {
-                        braceCount++;
-                    }
-                    else if (Match(TokenType.Symbol, "}"))
-                    {
-                        braceCount--;
-                    }
-                    
-                    Consume();
-                }
-            }
-            else
-            {
-                // Expect semicolon for constructor declarations
-                Expect(TokenType.Symbol, ";");
-            }
-            
-            classRep.AddMethod(constructor);
-        }
-
-        private void ParseDestructor(ClassRepresentation classRep, bool isVirtual = false)
-        {
-            // Consume '~'
-            Expect(TokenType.Operator, "~");
-            
-            // Expect class name
-            if (!Match(TokenType.Identifier, classRep.Name))
-            {
-                throw new Exception($"Expected class name after '~' at line {_currentToken.Line}, column {_currentToken.Column}");
-            }
-            
-            string name = "~" + _currentToken.Lexeme;
-            Consume();
-            
-            // Create destructor representation
-            MethodRepresentation destructor = new MethodRepresentation(name, "void", _currentVisibility, MethodType.Destructor);
-            destructor.IsVirtual = isVirtual;
-            
-            // Parse parameters (should be empty)
-            ParseParameters(destructor);
-            
-            // Expect semicolon
-            Expect(TokenType.Symbol, ";");
-            
-            classRep.AddMethod(destructor);
-        }
-
-        private void ParseOperator(ClassRepresentation classRep)
-        {
-            // Consume 'operator' keyword
-            Consume();
-            
-            // Get operator type
-            if (!Match(TokenType.Operator))
-            {
-                throw new Exception($"Expected operator at line {_currentToken.Line}, column {_currentToken.Column}");
-            }
-            
-            string operatorSymbol = _currentToken.Lexeme;
-            Consume();
-            
-            // Create operator method representation
-            string name = "operator" + operatorSymbol;
-            string returnType = "bool"; // Default return type for comparison operators
-            
-            MethodRepresentation operatorMethod = new MethodRepresentation(name, returnType, _currentVisibility, MethodType.Operator);
-            
-            // Parse parameters
-            ParseParameters(operatorMethod);
-            
-            // Check for const qualifier
-            if (Match(TokenType.Keyword, "const"))
-            {
-                operatorMethod.IsConst = true;
+                type += "&";
                 Consume();
             }
             
-            // Expect semicolon
-            Expect(TokenType.Symbol, ";");
-            
-            classRep.AddMethod(operatorMethod);
+            return true;
         }
 
-        private string ParseType()
-        {
-            string typeName = _currentToken.Lexeme;
-            Consume();
-
-            // Skip virtual keyword
-            if (typeName == "virtual")
-            {
-                // Check if next token is ~ (destructor)
-                if (Match(TokenType.Operator, "~"))
-                {
-                    // This is a virtual destructor, let ParseClassBody handle it
-                    return "virtual";
-                }
-                
-                if (!Match(TokenType.Identifier) && !Match(TokenType.Keyword))
-                {
-                    throw new Exception($"Expected type after 'virtual' at line {_currentToken.Line}, column {_currentToken.Column}");
-                }
-                typeName = _currentToken.Lexeme;
-                Consume();
-            }
-
-            // Check if it's a collection type
-            if (typeName == "std::vector" || typeName == "std::list" || typeName == "std::set")
-            {
-                return ParseSingleTypeCollection(typeName);
-            }
-            else if (typeName == "std::map")
-            {
-                return ParseMapCollection();
-            }
-
-            // Handle pointer/reference types
-            if (Match(TokenType.Operator, "*") || Match(TokenType.Operator, "&"))
-            {
-                typeName += _currentToken.Lexeme;
-                Consume();
-            }
-
-            return typeName;
-        }
-
-        private string ParseSingleTypeCollection(string collectionType)
-        {
-            // Expect opening angle bracket
-            Expect(TokenType.Symbol, "<");
-            
-            // Parse the element type
-            string elementType = ParseType();
-            
-            // Expect closing angle bracket
-            Expect(TokenType.Symbol, ">");
-            
-            return $"{collectionType}<{elementType}>";
-        }
-
-        private string ParseMapCollection()
-        {
-            // Expect opening angle bracket
-            Expect(TokenType.Symbol, "<");
-            
-            // Parse the key type
-            string keyType = ParseType();
-            
-            // Expect comma
-            Expect(TokenType.Symbol, ",");
-            
-            // Parse the value type
-            string valueType = ParseType();
-            
-            // Expect closing angle bracket
-            Expect(TokenType.Symbol, ">");
-            
-            return $"std::map<{keyType},{valueType}>";
-        }
-    
         private bool ParametersMatch(List<ParameterRepresentation> existingParams, List<ParameterRepresentation> newParams)
         {
             if (existingParams.Count != newParams.Count)
@@ -796,3 +842,45 @@ namespace Transpiler.Core.Parsing
         }
     }
 } 
+
+/*
+translation_unit  ::= (class_declaration | other_declarations)* 
+ 
+class_declaration ::= "class" identifier inheritance? "{" class_body "}" ";"? 
+ 
+inheritance        ::= ":" base_class ( "," base_class )* 
+base_class         ::= "public" identifier   
+                    | "protected" identifier  
+                    | "private" identifier  
+                    | identifier  // default public if omitted?
+ 
+class_body         ::= (visibility_section | field_declaration | method_declaration)* 
+ 
+visibility_section ::= "public:" | "private:" | "protected:" 
+ 
+field_declaration  ::= type identifier ";" 
+ 
+method_declaration ::= virtual_spec? type identifier "(" parameter_list? ")" const_spec? inheritance_spec? ";" 
+                    | constructor_declaration 
+                    | destructor_declaration 
+                    | operator_declaration 
+ 
+Inheritance_spec ::= override_spec | pure_virtual 
+virtual_spec ::= "virtual" 
+const_spec ::= "const" 
+override_spec ::= "override" 
+pure_virtual ::= "= 0" 
+ 
+constructor_declaration ::= identifier "(" parameter_list? ")" ";" 
+ 
+destructor_declaration  ::= "~" identifier "(" ")" ";" 
+ 
+parameter_list      ::= parameter ( "," parameter )* 
+parameter           ::= type identifier 
+ 
+type                ::= "int" | "double" | "std::string" | identifier | collection_type 
+collection_type  ::= "std::vector<" type ">" |  "std::list<" type ">" |  "std::map<" type "," type " >" | "std::set<" type ">" 
+identifier          ::= letter (letter | digit | "_")* 
+letter              ::= [A-Za-z] 
+digit               ::= [0-9] 
+*/

@@ -1,6 +1,7 @@
 // CppToCsTransformer.cs - Transforms C++ models to C# equivalents
 using System.Collections.Generic;
 using System.Linq;
+using System;
 using Transpiler.Core.Models;
 
 namespace Transpiler.Core.Transformation
@@ -58,11 +59,13 @@ namespace Transpiler.Core.Transformation
                 if (method.IsGetter())
                 {
                     string propertyName = method.GetPropertyName();
+                    Console.WriteLine($"Found getter: {method.Name} -> Property: {propertyName}");
                     getters[propertyName] = method;
                 }
                 else if (method.IsSetter())
                 {
                     string propertyName = method.GetPropertyName();
+                    Console.WriteLine($"Found setter: {method.Name} -> Property: {propertyName}");
                     setters[propertyName] = method;
                 }
             }
@@ -76,16 +79,31 @@ namespace Transpiler.Core.Transformation
                 bool hasGetter = getters.ContainsKey(propertyName);
                 bool hasSetter = setters.ContainsKey(propertyName);
                 
+                Console.WriteLine($"Processing field: {fieldName} -> Property: {propertyName}, HasGetter: {hasGetter}, HasSetter: {hasSetter}");
+                
                 if (hasGetter || hasSetter)
                 {
                     // This field should be a property
+                    Console.WriteLine($"Converting field '{fieldName}' to property '{propertyName}'");
+                    
+                    // Determine the property visibility from the getter/setter methods
+                    Visibility propertyVisibility = field.Visibility; // Default to field visibility
+                    if (hasGetter && getters.ContainsKey(propertyName))
+                    {
+                        propertyVisibility = getters[propertyName].Visibility;
+                    }
+                    else if (hasSetter && setters.ContainsKey(propertyName))
+                    {
+                        propertyVisibility = setters[propertyName].Visibility;
+                    }
+                    
                     CsPropertyModel property = new CsPropertyModel
                     {
                         Name = propertyName,
                         Type = MapType(field.Type),
                         HasGetter = hasGetter,
                         HasSetter = hasSetter,
-                        Visibility = ConvertVisibility(field.Visibility)
+                        Visibility = ConvertVisibility(propertyVisibility)
                     };
                     
                     csClass.Properties.Add(property);
@@ -93,6 +111,7 @@ namespace Transpiler.Core.Transformation
                 else
                 {
                     // Regular field
+                    Console.WriteLine($"Keeping field '{fieldName}' as field");
                     CsFieldModel csField = new CsFieldModel
                     {
                         Name = field.Name,
@@ -110,9 +129,11 @@ namespace Transpiler.Core.Transformation
                 // Skip methods that were transformed to properties
                 if (method.IsGetter() || method.IsSetter())
                 {
+                    Console.WriteLine($"Skipping method '{method.Name}' because it was converted to a property");
                     continue;
                 }
                 
+                Console.WriteLine($"Transforming method: {method.Name}");
                 CsMethodModel csMethod = TransformMethod(method);
                 csClass.Methods.Add(csMethod);
             }
@@ -281,53 +302,5 @@ namespace Transpiler.Core.Transformation
                     return "private";
             }
         }
-    }
-
-    // C# models for code generation
-    public class CsClassModel
-    {
-        public string Name { get; set; } = "";
-        public List<string> BaseClasses { get; } = new List<string>();
-        public List<CsFieldModel> Fields { get; } = new List<CsFieldModel>();
-        public List<CsPropertyModel> Properties { get; } = new List<CsPropertyModel>();
-        public List<CsMethodModel> Methods { get; } = new List<CsMethodModel>();
-        public string SourceFileName { get; set; } = "";
-        public bool IsAbstract { get; set; }
-    }
-
-    public class CsFieldModel
-    {
-        public string Name { get; set; }
-        public string Type { get; set; }
-        public string Visibility { get; set; } = "private";
-    }
-
-    public class CsPropertyModel
-    {
-        public string Name { get; set; }
-        public string Type { get; set; }
-        public bool HasGetter { get; set; }
-        public bool HasSetter { get; set; }
-        public string Visibility { get; set; } = "public";
-    }
-
-    public class CsMethodModel
-    {
-        public string Name { get; set; } = "";
-        public string ReturnType { get; set; } = "";
-        public string Visibility { get; set; } = "public";
-        public List<CsParameterModel> Parameters { get; } = new List<CsParameterModel>();
-        public bool IsConstructor { get; set; }
-        public bool IsDestructor { get; set; }
-        public bool IsEquals { get; set; }
-        public bool IsOverride { get; set; }
-        public bool IsAbstract { get; set; }
-        public string? Comment { get; set; }
-    }
-
-    public class CsParameterModel
-    {
-        public string Name { get; set; }
-        public string Type { get; set; }
     }
 } 

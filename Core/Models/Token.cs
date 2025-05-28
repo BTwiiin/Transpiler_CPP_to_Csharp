@@ -3,13 +3,32 @@ namespace Transpiler.Core.Models
 {
     public enum TokenType
     {
-        Keyword,        // class, public, private, protected, etc.
+        KeywordClass,
+        KeywordPublic,
+        KeywordPrivate,
+        KeywordProtected,
+        KeywordConst,
+        KeywordStatic,
+        KeywordVirtual,
+        KeywordOverride,
+        KeywordVoid,
+        KeywordInt,
+        KeywordDouble,
+        KeywordBool,
+        KeywordString,
+        KeywordStdVector,
+        KeywordStdList,
+        KeywordStdMap,
+        KeywordStdSet,
+        KeywordStd,
+        Unknown,
         Identifier,     // variable names, class names, etc.
         Symbol,         // {, }, (, ), ;, :, etc.
         Operator,       // =, ==, +, -, etc.
         StringLiteral,  // "string"
         NumberLiteral,  // 123, 3.14
-        Comment,        // // comment or /* comment */
+        LineComment,        // // comment
+        BlockComment,       // /* comment */
         Whitespace,     // spaces, tabs, newlines
         EndOfFile       // end of file marker
     }
