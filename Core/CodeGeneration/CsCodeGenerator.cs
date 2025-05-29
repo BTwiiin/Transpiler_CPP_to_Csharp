@@ -130,6 +130,11 @@ namespace Transpiler.Core.CodeGeneration
                 
                 code.Append("    ").Append(method.Visibility).Append(" ");
                 
+                if (method.IsStatic)
+                {
+                    code.Append("static ");
+                }
+                
                 if (method.IsOverride)
                 {
                     code.Append("override ");
@@ -171,49 +176,27 @@ namespace Transpiler.Core.CodeGeneration
                 if (method.IsConstructor)
                 {
                     code.AppendLine("        // TODO: implement constructor");
+                    code.AppendLine("        throw new NotImplementedException();");
                 }
                 else if (method.IsEquals)
                 {
                     code.AppendLine("        // TODO: implement equality comparison");
+                    code.AppendLine("        throw new NotImplementedException();");
                 }
                 else
                 {
-                    if (method.ReturnType != "void" && method.ReturnType != "")
-                    {
-                        code.AppendLine("        // TODO: implement method");
-                        
-                        switch (method.ReturnType)
-                        {
-                            case "int":
-                            case "byte":
-                            case "short":
-                            case "long":
-                                code.AppendLine("0;");
-                                break;
-                            case "float":
-                            case "double":
-                            case "decimal":
-                                code.AppendLine("0.0;");
-                                break;
-                            case "bool":
-                                code.AppendLine("false;");
-                                break;
-                            case "string":
-                                code.AppendLine("\"\";");
-                                break;
-                            default:
-                                code.AppendLine("null;");
-                                break;
-                        }
-                    }
-                    else
-                    {
-                        code.AppendLine("        // TODO: implement method");
-                    }
+                    code.AppendLine("        // TODO: implement method");
+                    code.AppendLine("        throw new NotImplementedException();");
                 }
                 
                 code.AppendLine("    }");
                 code.AppendLine();
+                
+                // Generate additional equality support methods if needed
+                if (method.RequiresEqualitySupport)
+                {
+                    GenerateEqualitySupportMethods(code, csClass.Name);
+                }
             }
             
             // Close class
@@ -223,6 +206,33 @@ namespace Transpiler.Core.CodeGeneration
             File.WriteAllText(filePath, code.ToString());
             
             Console.WriteLine($"Generated: {filePath}");
+        }
+
+        private void GenerateEqualitySupportMethods(StringBuilder code, string className)
+        {
+            // Generate GetHashCode override
+            code.AppendLine("    public override int GetHashCode()");
+            code.AppendLine("    {");
+            code.AppendLine("        // TODO: implement GetHashCode");
+            code.AppendLine("        throw new NotImplementedException();");
+            code.AppendLine("    }");
+            code.AppendLine();
+            
+            // Generate == operator
+            code.AppendLine($"    public static bool operator ==({className} left, {className} right)");
+            code.AppendLine("    {");
+            code.AppendLine("        // TODO: implement == operator");
+            code.AppendLine("        throw new NotImplementedException();");
+            code.AppendLine("    }");
+            code.AppendLine();
+            
+            // Generate != operator
+            code.AppendLine($"    public static bool operator !=({className} left, {className} right)");
+            code.AppendLine("    {");
+            code.AppendLine("        // TODO: implement != operator");
+            code.AppendLine("        throw new NotImplementedException();");
+            code.AppendLine("    }");
+            code.AppendLine();
         }
     }
 } 

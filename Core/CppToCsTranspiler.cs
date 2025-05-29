@@ -22,7 +22,7 @@ namespace Transpiler.Core
             _outputDirectory = outputDirectory ?? Path.Combine(Directory.GetCurrentDirectory(), "Output");
         }
 
-        public void ProcessFile(string filePath)
+        public bool ProcessFile(string filePath)
         {
             Console.WriteLine($"Processing: {filePath}");
             
@@ -55,7 +55,7 @@ namespace Transpiler.Core
                             Console.WriteLine("ERROR: Parsing timed out after 10 seconds, possible infinite loop detected.");
                             Console.ResetColor();
                             Console.WriteLine("Transpilation failed due to timeout.");
-                            return;
+                            return false;
                         }
                         
                         List<ClassRepresentation> cppClasses = parseTask.Result;
@@ -63,7 +63,7 @@ namespace Transpiler.Core
                         if (cppClasses.Count == 0)
                         {
                             Console.WriteLine($"No classes found in {filePath}");
-                            return;
+                            return false;
                         }
                         
                         Console.WriteLine($"Found {cppClasses.Count} class(es) in {filePath}");
@@ -78,6 +78,7 @@ namespace Transpiler.Core
                         }
                         
                         Console.WriteLine("Transpilation completed successfully.");
+                        return true;
                     }
                     catch (ParsingErrorException ex)
                     {
@@ -85,7 +86,7 @@ namespace Transpiler.Core
                         Console.WriteLine($"PARSING ERROR at line {ex.LineNumber}, column {ex.ColumnNumber}: {ex.ErrorMessage}");
                         Console.ResetColor();
                         Console.WriteLine("Transpilation completed with errors.");
-                        return; // Exit after parsing error
+                        return false; // Exit after parsing error
                     }
                     catch (SyntaxErrorException ex)
                     {
@@ -93,6 +94,7 @@ namespace Transpiler.Core
                         Console.WriteLine($"SYNTAX ERROR at line {ex.LineNumber}, column {ex.ColumnNumber}: {ex.ErrorMessage}");
                         Console.ResetColor();
                         Console.WriteLine("Transpilation completed with errors.");
+                        return false;
                     }
                     catch (AggregateException ae)
                     {
@@ -107,6 +109,7 @@ namespace Transpiler.Core
                         {
                             throw ae.InnerException;
                         }
+                        return false;
                     }
                 }
                 catch (Exception ex)
@@ -116,6 +119,7 @@ namespace Transpiler.Core
                     Console.WriteLine(ex.StackTrace);
                     Console.ResetColor();
                     Console.WriteLine("Transpilation failed.");
+                    return false;
                 }
                 finally
                 {
@@ -128,6 +132,7 @@ namespace Transpiler.Core
                 Console.WriteLine($"UNHANDLED ERROR: {ex.Message}");
                 Console.WriteLine(ex.StackTrace);
                 Console.ResetColor();
+                return false;
             }
         }
     }

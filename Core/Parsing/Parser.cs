@@ -235,34 +235,18 @@ namespace Transpiler.Core.Parsing
                 {
                     throw new SyntaxErrorException(_currentToken.Line, _currentToken.Column, "Unexpected end of file in class body");
                 }
-                else if (TryParseVisibilitySection())
+                
+                // Try to parse each body element type in sequence using scanner-like pattern
+                if (TryParseVisibilitySection() ||
+                    TryParseOperatorDeclaration(classRep) ||
+                    TryParseConstructor(classRep) ||
+                    TryParseDestructor(classRep) ||
+                    TryParseFieldDeclaration(classRep) ||
+                    TryParseMethodDeclaration(classRep))
                 {
-                    // Successfully parsed visibility section
-                    Console.WriteLine($"Parsed visibility section: {_currentVisibility}");
-                }
-                else if (TryParseOperatorDeclaration(classRep))
-                {
-                    Console.WriteLine($"Parsed operator declaration for class '{classRep.Name}'");
-                }
-                else if (TryParseConstructor(classRep))
-                {
-                    Console.WriteLine($"Parsed constructor for class '{classRep.Name}'");
-                }
-                else if (TryParseDestructor(classRep))
-                {
-                    Console.WriteLine($"Parsed destructor for class '{classRep.Name}'");
-                }
-                else if (TryParseFieldDeclaration(classRep))
-                {
-                    // Successfully parsed field declaration
-                    var lastField = classRep.Fields.LastOrDefault();
-                    Console.WriteLine($"Parsed field: {lastField?.Type} {lastField?.Name} with {lastField?.Visibility} visibility");
-                }
-                else if (TryParseMethodDeclaration(classRep))
-                {
-                    // Successfully parsed method declaration
-                    var lastMethod = classRep.Methods.LastOrDefault();
-                    Console.WriteLine($"Parsed method: {lastMethod?.ReturnType} {lastMethod?.Name} with {lastMethod?.Visibility} visibility");
+                    // Successfully parsed one of the body elements
+                    // Each TryParse method handles its own success logging
+                    continue;
                 }
                 else
                 {
@@ -304,6 +288,7 @@ namespace Transpiler.Core.Parsing
                     constructor.AddParameter(param);
                 }
                 classRep.AddMethod(constructor);
+                Console.WriteLine($"Parsed constructor for class '{classRep.Name}'");
                 return true;
             }
             return false;
@@ -325,6 +310,7 @@ namespace Transpiler.Core.Parsing
                     Expect(TokenType.Symbol, ";");
                     
                     classRep.AddMethod(new MethodRepresentation(destructorName, "void", _currentVisibility, MethodType.Destructor));
+                    Console.WriteLine($"Parsed destructor for class '{classRep.Name}'");
                     return true;
                 }
                 else
@@ -540,6 +526,7 @@ namespace Transpiler.Core.Parsing
                 }
                 classRep.AddMethod(operatorMethod);
                 CommitPosition();
+                Console.WriteLine($"Parsed operator declaration for class '{classRep.Name}'");
                 return true;
             }
             else
@@ -560,6 +547,7 @@ namespace Transpiler.Core.Parsing
                 Console.WriteLine($"Consuming using Expect {_currentToken.Lexeme}");
                 Expect(TokenType.Symbol, ":");
                 Console.WriteLine($"Token After Expect {_currentToken.Lexeme}");
+                Console.WriteLine($"Parsed visibility section: {_currentVisibility}");
                 return true;
             }
             else if (Match(TokenType.KeywordProtected, "protected"))
@@ -567,6 +555,7 @@ namespace Transpiler.Core.Parsing
                 _currentVisibility = Visibility.Protected;
                 Consume();
                 Expect(TokenType.Symbol, ":");
+                Console.WriteLine($"Parsed visibility section: {_currentVisibility}");
                 return true;
             }
             else if (Match(TokenType.KeywordPrivate, "private"))
@@ -574,6 +563,7 @@ namespace Transpiler.Core.Parsing
                 _currentVisibility = Visibility.Private;
                 Consume();
                 Expect(TokenType.Symbol, ":");
+                Console.WriteLine($"Parsed visibility section: {_currentVisibility}");
                 return true;
             }
             return false;
@@ -634,6 +624,7 @@ namespace Transpiler.Core.Parsing
             // Add the field to the class representation
             classRep.AddField(new FieldRepresentation(fieldName, fieldType, _currentVisibility));
             CommitPosition();
+            Console.WriteLine($"Parsed field: {fieldType} {fieldName} with {_currentVisibility} visibility");
             return true;
         }
 
@@ -696,8 +687,15 @@ namespace Transpiler.Core.Parsing
             // Expect semicolon
             Expect(TokenType.Symbol, ";");
 
+            // Determine method type based on method name
+            MethodType methodType = MethodType.Normal;
+            if (methodName.StartsWith("operator"))
+            {
+                methodType = MethodType.Operator;
+            }
+
             // Create and configure the method representation
-            var method = new MethodRepresentation(methodName, returnType, _currentVisibility, MethodType.Normal);
+            var method = new MethodRepresentation(methodName, returnType, _currentVisibility, methodType);
             method.IsVirtual = isVirtual;
             method.IsConst = isConst;
             method.IsOverride = isOverride;
@@ -711,6 +709,7 @@ namespace Transpiler.Core.Parsing
             // Add the method to the class representation
             classRep.AddMethod(method);
             CommitPosition();
+            Console.WriteLine($"Parsed method: {returnType} {methodName} with {_currentVisibility} visibility");
             return true;
         }
 

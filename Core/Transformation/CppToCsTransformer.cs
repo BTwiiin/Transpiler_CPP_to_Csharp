@@ -188,14 +188,29 @@ namespace Transpiler.Core.Transformation
                         csMethod.Name = "Equals";
                         csMethod.ReturnType = "bool";
                         csMethod.IsOverride = true;
+                        csMethod.RequiresEqualitySupport = true; // Flag to generate additional equality methods
                         
                         // Replace parameters with the standard object parameter
                         csMethod.Parameters.Clear();
                         csMethod.Parameters.Add(new CsParameterModel { Name = "other", Type = "object" });
+                        
+                        csMethod.Comment = "// TODO: Implement equality comparison";
                     }
                     else
                     {
-                        csMethod.Comment = $"// TODO: Implement operator {cppMethod.Name.Substring(8)}";
+                        // Handle other operators as proper C# operator overloads
+                        string operatorSymbol = cppMethod.Name.Substring(8); // Remove "operator" prefix
+                        csMethod.Name = $"operator {operatorSymbol}"; // Add space for C# syntax
+                        csMethod.IsStatic = true; // Operator overloading must be static in C#
+                        csMethod.Visibility = "public"; // Operators must be public
+                        
+                        // Clean up parameter types - remove const qualifiers
+                        foreach (var param in csMethod.Parameters)
+                        {
+                            param.Type = CleanParameterType(param.Type);
+                        }
+                        
+                        csMethod.Comment = $"// TODO: Implement operator {operatorSymbol}";
                     }
                     break;
             }
@@ -301,6 +316,16 @@ namespace Transpiler.Core.Transformation
                 default:
                     return "private";
             }
+        }
+
+        private string CleanParameterType(string type)
+        {
+            // Remove const from parameter types since const parameters are not valid in C#
+            if (type.StartsWith("const "))
+            {
+                return type.Substring(6); // Remove "const " prefix
+            }
+            return type;
         }
     }
 } 

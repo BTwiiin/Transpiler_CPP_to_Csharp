@@ -41,6 +41,8 @@ namespace Transpiler.Core.Models
         public bool IsEquals { get; set; }
         public bool IsOverride { get; set; }
         public bool IsAbstract { get; set; }
+        public bool IsStatic { get; set; }
+        public bool RequiresEqualitySupport { get; set; }
         public string? Comment { get; set; }
     }
 
